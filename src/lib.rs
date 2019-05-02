@@ -17,6 +17,7 @@ type Ctx = container::Ctx;
 
 mod elf;
 mod mach;
+mod object;
 mod target;
 
 pub mod artifact;

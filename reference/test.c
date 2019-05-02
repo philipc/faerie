@@ -1,4 +1,5 @@
-extern int printf(const char *format, ...);
+#include <stdio.h>
+//extern int printf(const char *format, ...);
 extern int DEADBEEF;
 
 int STATIC = 0xcafebabe;

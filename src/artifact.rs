@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
 
-use crate::{elf, mach};
+use crate::{elf, mach, object};
 
 pub(crate) mod decl;
 pub use crate::artifact::decl::{
@@ -448,14 +448,7 @@ impl Artifact {
     pub fn emit_as(&self, format: BinaryFormat) -> Result<Vec<u8>, Error> {
         let undef = self.undefined_symbols();
         if undef.is_empty() {
-            match format {
-                BinaryFormat::Elf => elf::to_bytes(self),
-                BinaryFormat::Macho => mach::to_bytes(self),
-                _ => Err(format_err!(
-                    "binary format {} is not supported",
-                    self.target.binary_format
-                )),
-            }
+            Ok(object::to_bytes(self, format))
         } else {
             Err(format_err!(
                 "the following symbols are declared but not defined: {:?}",

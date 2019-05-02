@@ -1,7 +1,7 @@
 # Build the object files that are used as a reference for src/bin/main.rs
 
 CC = gcc
-CFLAGS = -ffunction-sections -fdata-sections -fPIC -g
+CFLAGS = -ffunction-sections -fdata-sections -fPIC -g -m64
 
 LD = $(CC)
 LDFLAGS =
