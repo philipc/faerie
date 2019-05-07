@@ -115,44 +115,41 @@ impl State {
             }
         }
 
+        // Always add a section symbol, and use it for
+        // relocations that refer to this definition.
+        let symbol_id = self.object.add_symbol(Symbol {
+            name: Vec::new(),
+            value: 0,
+            size: 0,
+            binding: Binding::Local,
+            kind: SymbolKind::Section,
+            section: Some(section_id),
+        });
+        self.symbols.insert(string_id, symbol_id);
+
         // TODO: d.get_visibility()
         match decl {
             DefinedDecl::Function(d) => {
-                let symbol = Symbol {
+                self.object.add_symbol(Symbol {
                     name: name.as_bytes().to_vec(),
                     value: 0,
                     size: data.len() as u64,
                     binding: scope_binding(d.get_scope()),
                     kind: SymbolKind::Text,
                     section: Some(section_id),
-                };
-                let symbol_id = self.object.add_symbol(symbol);
-                self.symbols.insert(string_id, symbol_id);
+                });
             }
             DefinedDecl::Data(d) => {
-                let symbol = Symbol {
+                self.object.add_symbol(Symbol {
                     name: name.as_bytes().to_vec(),
                     value: 0,
                     size: data.len() as u64,
                     binding: scope_binding(d.get_scope()),
                     kind: SymbolKind::Data,
                     section: Some(section_id),
-                };
-                let symbol_id = self.object.add_symbol(symbol);
-                self.symbols.insert(string_id, symbol_id);
+                });
             }
-            DefinedDecl::Section(_) => {
-                let symbol = Symbol {
-                    name: name.as_bytes().to_vec(),
-                    value: 0,
-                    size: 0,
-                    binding: Binding::Local,
-                    kind: SymbolKind::Section,
-                    section: Some(section_id),
-                };
-                let symbol_id = self.object.add_symbol(symbol);
-                self.symbols.insert(string_id, symbol_id);
-            }
+            DefinedDecl::Section(_) => {}
         }
     }
 
@@ -233,5 +230,6 @@ pub fn to_bytes(artifact: &Artifact, format: BinaryFormat) -> Vec<u8> {
     for link in artifact.links() {
         state.link(&link);
     }
+    state.object.finalize(state.format);
     state.object.write(state.format)
 }
