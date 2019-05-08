@@ -49,16 +49,11 @@ impl State {
 
     fn definition(&mut self, name: &str, data: &[u8], decl: &artifact::DefinedDecl) {
         let string_id = self.strings.get_or_intern(name);
+        let section_name = name.as_bytes().to_vec();
         let section = match decl {
-            DefinedDecl::Function(d) => Section {
-                name: name.as_bytes().to_vec(),
-                segment_name: Vec::new(),
-                kind: SectionKind::Text,
-                address: 0,
-                size: data.len() as u64,
-                align: d.get_align().unwrap_or(1) as u64,
-                data: data.to_vec(),
-                relocations: Vec::new(),
+            DefinedDecl::Function(d) => {
+                let align = d.get_align().unwrap_or(1) as u64;
+                Section::new(section_name, SectionKind::Text, data.to_vec(), align)
             },
             DefinedDecl::Data(d) => {
                 let kind = match d.get_datatype() {
@@ -71,16 +66,8 @@ impl State {
                     }
                     DataType::String => SectionKind::ReadOnlyString,
                 };
-                Section {
-                    name: name.as_bytes().to_vec(),
-                    segment_name: Vec::new(),
-                    kind,
-                    address: 0,
-                    size: data.len() as u64,
-                    align: d.get_align().unwrap_or(1) as u64,
-                    data: data.to_vec(),
-                    relocations: Vec::new(),
-                }
+                let align = d.get_align().unwrap_or(1) as u64;
+                Section::new(section_name, kind, data.to_vec(), align)
             }
             DefinedDecl::Section(d) => {
                 // TODO: this behavior should be deprecated, but we need to warn users!
@@ -92,16 +79,8 @@ impl State {
                         DataType::String => SectionKind::OtherString,
                     }
                 };
-                Section {
-                    name: name.as_bytes().to_vec(),
-                    segment_name: Vec::new(),
-                    kind,
-                    address: 0,
-                    size: data.len() as u64,
-                    align: d.get_align().unwrap_or(1) as u64,
-                    data: data.to_vec(),
-                    relocations: Vec::new(),
-                }
+                let align = d.get_align().unwrap_or(1) as u64;
+                Section::new(section_name, kind, data.to_vec(), align)
             }
         };
         let section_id = self.object.add_section(section);
@@ -117,14 +96,7 @@ impl State {
 
         // Always add a section symbol, and use it for
         // relocations that refer to this definition.
-        let symbol_id = self.object.add_symbol(Symbol {
-            name: Vec::new(),
-            value: 0,
-            size: 0,
-            binding: Binding::Local,
-            kind: SymbolKind::Section,
-            section: Some(section_id),
-        });
+        let symbol_id = self.object.add_section_symbol(section_id);
         self.symbols.insert(string_id, symbol_id);
 
         // TODO: d.get_visibility()
