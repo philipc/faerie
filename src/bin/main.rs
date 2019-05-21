@@ -94,7 +94,6 @@ fn run (args: Args) -> Result<(), Error> {
         ("STATIC", Decl::data().global().writable().into()),
         ("STATIC_REF", Decl::data().global().writable().into()),
         ("printf", Decl::function_import().into()),
-        ("__main", Decl::function_import().into()),
     ];
     obj.declarations(declarations.into_iter())?;
 
