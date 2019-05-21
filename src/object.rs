@@ -1,20 +1,17 @@
 use crate::artifact::{
-    self, Artifact, DataType, Decl, DefinedDecl, ImportKind, LinkAndDecl, Reloc, Scope, Visibility,
+    self, Artifact, DataType, Decl, DefinedDecl, ImportKind, LinkAndDecl, Reloc, Scope,
 };
 use object_write::{
-    Binding, Format, Machine, Object, Relocation, RelocationKind, Section, SectionId, SectionKind,
-    Symbol, SymbolId, SymbolKind,
+    BinaryFormat, Binding, Object, Relocation, RelocationKind, Section, SectionId, SectionKind,
+    Symbol, SymbolId, SymbolKind, Visibility,
 };
 use std::collections::HashMap;
 use string_interner::DefaultStringInterner;
-use target_lexicon::{Architecture, BinaryFormat};
 
 // interned string idx
 type StringIndex = usize;
 
 struct State {
-    format: Format,
-    size: u8,
     object: Object,
     // Artifact refers to everything by name, so we need to keep a map from names to
     // sections/symbols.
@@ -25,21 +22,8 @@ struct State {
 
 impl State {
     fn new(artifact: &Artifact, format: BinaryFormat) -> Self {
-        use Architecture::*;
-        let (machine, size) = match artifact.target.architecture {
-            I386 | I586 | I686 => (Machine::X86, 32),
-            X86_64 => (Machine::X86_64, 64),
-            _ => unimplemented!(),
-        };
-        let format = match (format, size) {
-            (BinaryFormat::Elf, 64) => Format::Elf64,
-            (BinaryFormat::Coff, _) => Format::Coff,
-            _ => unimplemented!(),
-        };
-        let object = Object::new(machine);
+        let object = Object::new(format, artifact.target.architecture);
         State {
-            format,
-            size,
             object,
             strings: DefaultStringInterner::default(),
             sections: HashMap::default(),
@@ -52,9 +36,9 @@ impl State {
         let section_name = name.as_bytes().to_vec();
         let section = match decl {
             DefinedDecl::Function(d) => {
-                let align = d.get_align().unwrap_or(1) as u64;
+                let align = d.get_align().unwrap_or(16) as u64;
                 Section::new(section_name, SectionKind::Text, data.to_vec(), align)
-            },
+            }
             DefinedDecl::Data(d) => {
                 let kind = match d.get_datatype() {
                     DataType::Bytes => {
@@ -93,13 +77,19 @@ impl State {
                 Scope::Weak => Binding::Weak,
             }
         }
+        fn convert_visibility(v: artifact::Visibility) -> Visibility {
+            match v {
+                artifact::Visibility::Default => Visibility::Default,
+                artifact::Visibility::Hidden => Visibility::Hidden,
+                artifact::Visibility::Protected => Visibility::Protected,
+            }
+        }
 
         // Always add a section symbol, and use it for
         // relocations that refer to this definition.
         let symbol_id = self.object.add_section_symbol(section_id);
         self.symbols.insert(string_id, symbol_id);
 
-        // TODO: d.get_visibility()
         match decl {
             DefinedDecl::Function(d) => {
                 self.object.add_symbol(Symbol {
@@ -107,6 +97,7 @@ impl State {
                     value: 0,
                     size: data.len() as u64,
                     binding: scope_binding(d.get_scope()),
+                    visibility: convert_visibility(d.get_visibility()),
                     kind: SymbolKind::Text,
                     section: Some(section_id),
                 });
@@ -117,6 +108,7 @@ impl State {
                     value: 0,
                     size: data.len() as u64,
                     binding: scope_binding(d.get_scope()),
+                    visibility: convert_visibility(d.get_visibility()),
                     kind: SymbolKind::Data,
                     section: Some(section_id),
                 });
@@ -136,6 +128,7 @@ impl State {
             value: 0,
             size: 0,
             binding: Binding::Global,
+            visibility: Visibility::Default,
             kind,
             section: None,
         };
@@ -163,7 +156,11 @@ impl State {
                     Decl::Import(ImportKind::Data) => (RelocationKind::GotRelative, 32, -4),
                     _ => panic!("unsupported relocation {:?}", l),
                 },
-                Decl::Defined(DefinedDecl::Data { .. }) => (RelocationKind::Absolute, self.size, 0),
+                Decl::Defined(DefinedDecl::Data { .. }) => (
+                    RelocationKind::Absolute,
+                    self.object.architecture.pointer_width().unwrap().bits(),
+                    0,
+                ),
                 _ => panic!("unsupported relocation {:?}", l),
             },
             Reloc::Raw { reloc, addend } => (RelocationKind::Other(reloc), 0, addend),
@@ -190,6 +187,7 @@ pub fn to_bytes(artifact: &Artifact, format: BinaryFormat) -> Vec<u8> {
         value: 0,
         size: 0,
         binding: Binding::Local,
+        visibility: Visibility::Default,
         kind: SymbolKind::File,
         section: None,
     });
@@ -202,6 +200,6 @@ pub fn to_bytes(artifact: &Artifact, format: BinaryFormat) -> Vec<u8> {
     for link in artifact.links() {
         state.link(&link);
     }
-    state.object.finalize(state.format);
-    state.object.write(state.format)
+    state.object.finalize();
+    state.object.write()
 }
