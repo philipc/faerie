@@ -1,9 +1,10 @@
 use crate::artifact::{
-    self, Artifact, DataType, Decl, DefinedDecl, ImportKind, LinkAndDecl, Reloc, Scope,
+    self, Artifact, DataType, Decl, DefinedDecl, ImportKind, LinkAndDecl, Reloc, Scope, SectionKind,
 };
 use object_write::{
-    Binding, Object, Relocation, RelocationKind, Section, SectionId, SectionKind,
-    Symbol, SymbolId, SymbolKind, Visibility,
+    Binding, Object, Relocation, RelocationKind, RelocationSubkind, Section, SectionId,
+    SectionKind as ObjectSectionKind, StandardSection, StandardSegment, Symbol, SymbolId,
+    SymbolKind, Visibility,
 };
 use std::collections::HashMap;
 use string_interner::DefaultStringInterner;
@@ -17,7 +18,7 @@ struct State {
     // Artifact refers to everything by name, so we need to keep a map from names to
     // sections/symbols.
     strings: DefaultStringInterner,
-    sections: HashMap<StringIndex, SectionId>,
+    sections: HashMap<StringIndex, (SectionId, u64)>,
     symbols: HashMap<StringIndex, SymbolId>,
 }
 
@@ -34,45 +35,56 @@ impl State {
 
     fn definition(&mut self, name: &str, data: &[u8], decl: &artifact::DefinedDecl) {
         let string_id = self.strings.get_or_intern(name);
-        let section = match decl {
+        let (section_id, offset) = match decl {
             DefinedDecl::Function(d) => {
-                let kind = SectionKind::Text;
-                let name = self.object.section_name(kind, name.as_bytes());
+                let section = StandardSection::Text;
                 let align = d.get_align().unwrap_or(16) as u64;
-                Section::new(name, kind, data.to_vec(), align)
+                self.object
+                    .add_subsection(section, name.as_bytes(), data, align)
             }
             DefinedDecl::Data(d) => {
-                let kind = match d.get_datatype() {
+                let section = match d.get_datatype() {
                     DataType::Bytes => {
                         if d.is_writable() {
-                            SectionKind::Data
+                            StandardSection::Data
                         } else {
-                            SectionKind::ReadOnlyData
+                            StandardSection::ReadOnlyData
                         }
                     }
-                    DataType::String => SectionKind::ReadOnlyString,
+                    DataType::String => StandardSection::ReadOnlyString,
                 };
-                let name = self.object.section_name(kind, name.as_bytes());
                 let align = d.get_align().unwrap_or(1) as u64;
-                Section::new(name, kind, data.to_vec(), align)
+                self.object
+                    .add_subsection(section, name.as_bytes(), data, align)
             }
             DefinedDecl::Section(d) => {
+                let segment = match d.kind() {
+                    SectionKind::Text => StandardSegment::Text,
+                    SectionKind::Data => StandardSegment::Data,
+                    SectionKind::Debug => StandardSegment::Debug,
+                };
+                let segment_name = self.object.segment_name(segment).to_vec();
                 // TODO: this behavior should be deprecated, but we need to warn users!
                 let kind = if name == ".debug_str" || name == ".debug_line_str" {
-                    SectionKind::OtherString
+                    ObjectSectionKind::OtherString
                 } else {
                     match d.get_datatype() {
-                        DataType::Bytes => SectionKind::Other,
-                        DataType::String => SectionKind::OtherString,
+                        DataType::Bytes => ObjectSectionKind::Other,
+                        DataType::String => ObjectSectionKind::OtherString,
                     }
                 };
-                let name = name.as_bytes().to_vec();
+                let name = if self.object.format == BinaryFormat::Macho && name.starts_with('.') {
+                    format!("__{}", &name[1..]).into_bytes()
+                } else {
+                    name.as_bytes().to_vec()
+                };
                 let align = d.get_align().unwrap_or(1) as u64;
-                Section::new(name, kind, data.to_vec(), align)
+                let section = Section::new(segment_name, name, kind, data.to_vec(), align);
+                let section_id = self.object.add_section(section);
+                (section_id, 0)
             }
         };
-        let section_id = self.object.add_section(section);
-        self.sections.insert(string_id, section_id);
+        self.sections.insert(string_id, (section_id, offset));
 
         fn scope_binding(s: Scope) -> Binding {
             match s {
@@ -95,8 +107,8 @@ impl State {
         match decl {
             DefinedDecl::Function(d) => {
                 symbol_id = self.object.add_symbol(Symbol {
-                    name: name.as_bytes().to_vec(),
-                    value: 0,
+                    name: self.abi_name(name),
+                    value: offset,
                     size: data.len() as u64,
                     binding: scope_binding(d.get_scope()),
                     visibility: convert_visibility(d.get_visibility()),
@@ -106,8 +118,8 @@ impl State {
             }
             DefinedDecl::Data(d) => {
                 symbol_id = self.object.add_symbol(Symbol {
-                    name: name.as_bytes().to_vec(),
-                    value: 0,
+                    name: self.abi_name(name),
+                    value: offset,
                     size: data.len() as u64,
                     binding: scope_binding(d.get_scope()),
                     visibility: convert_visibility(d.get_visibility()),
@@ -127,7 +139,7 @@ impl State {
             ImportKind::Data => SymbolKind::Data,
         };
         let symbol = Symbol {
-            name: name.as_bytes().to_vec(),
+            name: self.abi_name(name),
             value: 0,
             size: 0,
             binding: Binding::Global,
@@ -144,26 +156,30 @@ impl State {
             let to_idx = self.strings.get_or_intern(l.to.name);
             self.symbols.get(&to_idx).unwrap()
         };
-        let from_section = {
+        let (from_section, from_offset) = {
             let from_idx = self.strings.get_or_intern(l.from.name);
             self.sections.get(&from_idx).unwrap()
         };
+        let mut subkind = RelocationSubkind::Default;
         let (kind, size, addend) = match l.reloc {
             Reloc::Auto => match *l.from.decl {
                 Decl::Defined(DefinedDecl::Function { .. }) => match *l.to.decl {
                     Decl::Defined(DefinedDecl::Function { .. }) => {
+                        subkind = RelocationSubkind::X86Branch;
                         (RelocationKind::Relative, 32, -4)
                     }
-                    Decl::Import(ImportKind::Function) => (RelocationKind::PltRelative, 32, -4),
+                    Decl::Import(ImportKind::Function) => {
+                        subkind = RelocationSubkind::X86Branch;
+                        (RelocationKind::PltRelative, 32, -4)
+                    }
                     Decl::Defined(DefinedDecl::Data { .. }) => (RelocationKind::Relative, 32, -4),
-                    Decl::Import(ImportKind::Data) => (RelocationKind::GotRelative, 32, -4),
+                    Decl::Import(ImportKind::Data) => {
+                        subkind = RelocationSubkind::X86RipRelativeMovq;
+                        (RelocationKind::GotRelative, 32, -4)
+                    }
                     _ => panic!("unsupported relocation {:?}", l),
                 },
-                Decl::Defined(DefinedDecl::Data { .. }) => (
-                    RelocationKind::Absolute,
-                    self.object.architecture.pointer_width().unwrap().bits(),
-                    0,
-                ),
+                Decl::Defined(DefinedDecl::Data { .. }) => (RelocationKind::Absolute, 64, 0),
                 _ => panic!("unsupported relocation {:?}", l),
             },
             Reloc::Raw { reloc, addend } => (RelocationKind::Other(reloc), 0, addend),
@@ -171,15 +187,27 @@ impl State {
         };
         let addend = i64::from(addend);
         let relocation = Relocation {
-            offset: l.at,
+            offset: from_offset + l.at,
             symbol: *to_symbol,
             kind,
+            subkind,
             size,
             addend,
         };
         self.object.sections[from_section.0]
             .relocations
             .push(relocation);
+    }
+
+    fn abi_name(&self, name: &str) -> Vec<u8> {
+        let mut result = Vec::new();
+        match self.object.format {
+            BinaryFormat::Elf | BinaryFormat::Coff => {}
+            BinaryFormat::Macho => result.push(b'_'),
+            _ => unimplemented!(),
+        }
+        result.extend(name.as_bytes());
+        result
     }
 }
 

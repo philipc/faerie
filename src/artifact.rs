@@ -448,6 +448,16 @@ impl Artifact {
     pub fn emit_as(&self, format: BinaryFormat) -> Result<Vec<u8>, Error> {
         let undef = self.undefined_symbols();
         if undef.is_empty() {
+            /*
+            match format {
+                BinaryFormat::Elf => elf::to_bytes(self),
+                BinaryFormat::Macho => mach::to_bytes(self),
+                _ => Err(format_err!(
+                    "binary format {} is not supported",
+                    self.target.binary_format
+                )),
+            }
+            */
             Ok(object::to_bytes(self, format))
         } else {
             Err(format_err!(
