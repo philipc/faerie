@@ -73,13 +73,14 @@ impl State {
                         DataType::String => ObjectSectionKind::OtherString,
                     }
                 };
-                let name = if self.object.format == BinaryFormat::Macho && name.starts_with('.') {
+                let name = if self.object.format() == BinaryFormat::Macho && name.starts_with('.') {
                     format!("__{}", &name[1..]).into_bytes()
                 } else {
                     name.as_bytes().to_vec()
                 };
                 let align = d.get_align().unwrap_or(1) as u64;
-                let section = Section::new(segment_name, name, kind, data.to_vec(), align);
+                let mut section = Section::new(segment_name, name, kind);
+                section.set_data(data.to_vec(), align);
                 let section_id = self.object.add_section(section);
                 (section_id, 0)
             }
@@ -154,11 +155,11 @@ impl State {
     fn link(&mut self, l: &LinkAndDecl) {
         let to_symbol = {
             let to_idx = self.strings.get_or_intern(l.to.name);
-            self.symbols.get(&to_idx).unwrap()
+            *self.symbols.get(&to_idx).unwrap()
         };
         let (from_section, from_offset) = {
             let from_idx = self.strings.get_or_intern(l.from.name);
-            self.sections.get(&from_idx).unwrap()
+            *self.sections.get(&from_idx).unwrap()
         };
         let mut subkind = RelocationSubkind::Default;
         let (kind, size, addend) = match l.reloc {
@@ -188,20 +189,18 @@ impl State {
         let addend = i64::from(addend);
         let relocation = Relocation {
             offset: from_offset + l.at,
-            symbol: *to_symbol,
+            symbol: to_symbol,
             kind,
             subkind,
             size,
             addend,
         };
-        self.object.sections[from_section.0]
-            .relocations
-            .push(relocation);
+        self.object.add_relocation(from_section, relocation);
     }
 
     fn abi_name(&self, name: &str) -> Vec<u8> {
         let mut result = Vec::new();
-        match self.object.format {
+        match self.object.format() {
             BinaryFormat::Elf | BinaryFormat::Coff => {}
             BinaryFormat::Macho => result.push(b'_'),
             _ => unimplemented!(),
@@ -231,6 +230,5 @@ pub fn to_bytes(artifact: &Artifact, format: BinaryFormat) -> Vec<u8> {
     for link in artifact.links() {
         state.link(&link);
     }
-    state.object.finalize();
     state.object.write()
 }
